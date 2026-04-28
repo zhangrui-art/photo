@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase";
-import { compressImage } from "@/lib/compress";
+import { uploadToCOS, getSignedUrls, deleteFromCOS } from "@/lib/cos";
 
 interface PhotoGroup {
   id: string;
@@ -14,13 +14,14 @@ interface PhotoGroup {
 interface Photo {
   id: string;
   group_id: string;
-  url: string;
+  cos_key: string;
   filename: string;
 }
 
 export default function PhotosPage() {
   const [groups, setGroups] = useState<PhotoGroup[]>([]);
   const [photos, setPhotos] = useState<Record<string, Photo[]>>({});
+  const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
   const [showUpload, setShowUpload] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -29,7 +30,7 @@ export default function PhotosPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
   const [dragging, setDragging] = useState(false);
-  const [lightbox, setLightbox] = useState<{ url: string; index: number; groupPhotos: Photo[]; groupId: string } | null>(null);
+  const [lightbox, setLightbox] = useState<{ index: number; groupPhotos: Photo[]; groupId: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const touchStartX = useRef(0);
   const touchEndX = useRef(0);
@@ -42,17 +43,26 @@ export default function PhotosPage() {
 
     if (groupData) {
       setGroups(groupData);
+      if (groupData.length === 0) return;
+
       const { data: photoData } = await supabase
         .from("photos")
         .select("*")
         .in("group_id", groupData.map((g) => g.id));
 
       const grouped: Record<string, Photo[]> = {};
+      const allKeys: string[] = [];
       photoData?.forEach((p) => {
         if (!grouped[p.group_id]) grouped[p.group_id] = [];
         grouped[p.group_id].push(p);
+        if (p.cos_key) allKeys.push(p.cos_key);
       });
       setPhotos(grouped);
+
+      if (allKeys.length > 0) {
+        const urls = await getSignedUrls(allKeys);
+        setSignedUrls((prev) => ({ ...prev, ...urls }));
+      }
     }
   }, []);
 
@@ -92,20 +102,16 @@ export default function PhotosPage() {
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        setUploadProgress(`压缩并上传中 ${i + 1}/${files.length}...`);
+        setUploadProgress(`上传中 ${i + 1}/${files.length}...`);
 
-        const compressed = await compressImage(file);
-        const ext = "jpg";
-        const path = `${group.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+        const ext = file.name.split(".").pop() || "jpg";
+        const cosKey = `photos/${group.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
 
-        const { error } = await supabase.storage.from("photos").upload(path, compressed);
-        if (error) throw error;
-
-        const { data: urlData } = supabase.storage.from("photos").getPublicUrl(path);
+        await uploadToCOS(file, cosKey);
 
         await supabase.from("photos").insert({
           group_id: group.id,
-          url: urlData.publicUrl,
+          cos_key: cosKey,
           filename: file.name,
         });
       }
@@ -126,10 +132,7 @@ export default function PhotosPage() {
 
   async function deletePhoto(photo: Photo, groupId: string) {
     if (!confirm("确定删除这张照片吗？")) return;
-    const url = new URL(photo.url);
-    const parts = url.pathname.split("/photos/");
-    const path = parts[parts.length - 1];
-    await supabase.storage.from("photos").remove([path]);
+    await deleteFromCOS([photo.cos_key]);
     await supabase.from("photos").delete().eq("id", photo.id);
     await loadData();
     if (lightbox) {
@@ -138,12 +141,14 @@ export default function PhotosPage() {
         setLightbox(null);
       } else {
         const newIdx = Math.min(lightbox.index, remaining.length - 1);
-        setLightbox({ url: remaining[newIdx].url, index: newIdx, groupPhotos: remaining, groupId });
+        setLightbox({ index: newIdx, groupPhotos: remaining, groupId });
       }
     }
   }
 
-  async function downloadPhoto(url: string, filename: string) {
+  async function downloadPhoto(cosKey: string, filename: string) {
+    const url = signedUrls[cosKey];
+    if (!url) return;
     try {
       const res = await fetch(url);
       const blob = await res.blob();
@@ -163,7 +168,7 @@ export default function PhotosPage() {
     if (!lightbox) return;
     const newIdx = lightbox.index + dir;
     if (newIdx < 0 || newIdx >= lightbox.groupPhotos.length) return;
-    setLightbox({ ...lightbox, index: newIdx, url: lightbox.groupPhotos[newIdx].url });
+    setLightbox({ ...lightbox, index: newIdx });
   }
 
   function handleTouchStart(e: React.TouchEvent) {
@@ -182,18 +187,15 @@ export default function PhotosPage() {
     if (!confirm("确定删除这个相册和所有照片吗？")) return;
 
     const groupPhotos = photos[groupId] || [];
-    const paths = groupPhotos.map((p) => {
-      const url = new URL(p.url);
-      const parts = url.pathname.split("/photos/");
-      return parts[parts.length - 1];
-    });
-    if (paths.length > 0) {
-      await supabase.storage.from("photos").remove(paths);
-    }
+    const keys = groupPhotos.map((p) => p.cos_key).filter(Boolean);
+    await deleteFromCOS(keys);
     await supabase.from("photos").delete().eq("group_id", groupId);
     await supabase.from("photo_groups").delete().eq("id", groupId);
     await loadData();
   }
+
+  const currentLightboxPhoto = lightbox ? lightbox.groupPhotos[lightbox.index] : null;
+  const currentLightboxUrl = currentLightboxPhoto ? signedUrls[currentLightboxPhoto.cos_key] : null;
 
   return (
     <div className="fade-in">
@@ -335,9 +337,18 @@ export default function PhotosPage() {
                   <div
                     key={photo.id}
                     className="aspect-square rounded-lg overflow-hidden bg-slate-100 cursor-pointer hover:opacity-90 transition-opacity"
-                    onClick={() => setLightbox({ url: photo.url, index: idx, groupPhotos: photos[group.id], groupId: group.id })}
+                    onClick={() => setLightbox({ index: idx, groupPhotos: photos[group.id], groupId: group.id })}
                   >
-                    <img src={photo.url} alt={photo.filename} className="w-full h-full object-cover" loading="lazy" />
+                    {signedUrls[photo.cos_key] ? (
+                      <img src={signedUrls[photo.cos_key]} alt={photo.filename} className="w-full h-full object-cover" loading="lazy" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-slate-300">
+                        <svg className="w-6 h-6 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -346,20 +357,19 @@ export default function PhotosPage() {
         </div>
       )}
 
-      {lightbox && (
+      {lightbox && currentLightboxPhoto && (
         <div
           className="fixed inset-0 bg-black/90 z-50 flex flex-col"
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
         >
-          {/* Top bar */}
           <div className="flex items-center justify-between px-4 py-3 shrink-0">
             <span className="text-white/70 text-sm">
               {lightbox.index + 1} / {lightbox.groupPhotos.length}
             </span>
             <div className="flex items-center gap-3">
               <button
-                onClick={() => downloadPhoto(lightbox.url, lightbox.groupPhotos[lightbox.index].filename)}
+                onClick={() => downloadPhoto(currentLightboxPhoto.cos_key, currentLightboxPhoto.filename)}
                 className="text-white/70 hover:text-white p-2"
                 title="下载"
               >
@@ -368,7 +378,7 @@ export default function PhotosPage() {
                 </svg>
               </button>
               <button
-                onClick={() => deletePhoto(lightbox.groupPhotos[lightbox.index], lightbox.groupId)}
+                onClick={() => deletePhoto(currentLightboxPhoto, lightbox.groupId)}
                 className="text-white/70 hover:text-red-400 p-2"
                 title="删除"
               >
@@ -388,7 +398,6 @@ export default function PhotosPage() {
             </div>
           </div>
 
-          {/* Image area */}
           <div className="flex-1 flex items-center justify-center relative px-4 min-h-0">
             {lightbox.index > 0 && (
               <button
@@ -398,12 +407,16 @@ export default function PhotosPage() {
                 &#8249;
               </button>
             )}
-            <img
-              src={lightbox.url}
-              alt=""
-              className="max-w-full max-h-full object-contain rounded-lg select-none"
-              draggable={false}
-            />
+            {currentLightboxUrl ? (
+              <img
+                src={currentLightboxUrl}
+                alt=""
+                className="max-w-full max-h-full object-contain rounded-lg select-none"
+                draggable={false}
+              />
+            ) : (
+              <div className="text-white/50">加载中...</div>
+            )}
             {lightbox.index < lightbox.groupPhotos.length - 1 && (
               <button
                 className="hidden md:block absolute right-2 text-white/60 hover:text-white text-4xl z-10"

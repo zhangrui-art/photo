@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { getSignedUrls } from "@/lib/cos";
 
 export default function Home() {
   const [photoCount, setPhotoCount] = useState(0);
@@ -14,11 +15,16 @@ export default function Home() {
       const [{ count: pc }, { count: mc }, { data: photos }] = await Promise.all([
         supabase.from("photos").select("*", { count: "exact", head: true }),
         supabase.from("memos").select("*", { count: "exact", head: true }),
-        supabase.from("photos").select("url").order("created_at", { ascending: false }).limit(6),
+        supabase.from("photos").select("cos_key").order("created_at", { ascending: false }).limit(6),
       ]);
       setPhotoCount(pc ?? 0);
       setMemoCount(mc ?? 0);
-      setRecentPhotos(photos?.map((p) => p.url) ?? []);
+
+      const keys = photos?.map((p) => p.cos_key).filter(Boolean) ?? [];
+      if (keys.length > 0) {
+        const urls = await getSignedUrls(keys);
+        setRecentPhotos(keys.map((k) => urls[k]).filter(Boolean));
+      }
     }
     load();
   }, []);
