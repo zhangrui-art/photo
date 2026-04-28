@@ -23,6 +23,7 @@ export default function PhotosPage() {
   const [photos, setPhotos] = useState<Record<string, Photo[]>>({});
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
   const [showUpload, setShowUpload] = useState(false);
+  const [addToGroupId, setAddToGroupId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -88,39 +89,40 @@ export default function PhotosPage() {
   }
 
   async function handleUpload() {
-    if (files.length === 0 || !title.trim()) return;
+    if (files.length === 0) return;
+    if (!addToGroupId && !title.trim()) return;
     setUploading(true);
 
     try {
-      const { data: group } = await supabase
-        .from("photo_groups")
-        .insert({ title: title.trim(), description: description.trim() })
-        .select()
-        .single();
+      let groupId = addToGroupId;
 
-      if (!group) throw new Error("Failed to create group");
+      if (!groupId) {
+        const { data: group } = await supabase
+          .from("photo_groups")
+          .insert({ title: title.trim(), description: description.trim() })
+          .select()
+          .single();
+        if (!group) throw new Error("Failed to create group");
+        groupId = group.id;
+      }
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         setUploadProgress(`上传中 ${i + 1}/${files.length}...`);
 
         const ext = file.name.split(".").pop() || "jpg";
-        const cosKey = `photos/${group.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+        const cosKey = `photos/${groupId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
 
         await uploadToCOS(file, cosKey);
 
         await supabase.from("photos").insert({
-          group_id: group.id,
+          group_id: groupId,
           cos_key: cosKey,
           filename: file.name,
         });
       }
 
-      setTitle("");
-      setDescription("");
-      setFiles([]);
-      setPreviews([]);
-      setShowUpload(false);
+      resetUploadForm();
       await loadData();
     } catch (err) {
       console.error("Upload failed:", err);
@@ -128,6 +130,25 @@ export default function PhotosPage() {
     } finally {
       setUploading(false);
     }
+  }
+
+  function resetUploadForm() {
+    setTitle("");
+    setDescription("");
+    setFiles([]);
+    setPreviews([]);
+    setShowUpload(false);
+    setAddToGroupId(null);
+  }
+
+  function startAddToGroup(groupId: string) {
+    setAddToGroupId(groupId);
+    setShowUpload(true);
+    setTitle("");
+    setDescription("");
+    setFiles([]);
+    setPreviews([]);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   async function deletePhoto(photo: Photo, groupId: string) {
@@ -205,7 +226,7 @@ export default function PhotosPage() {
           <p className="text-muted mt-1">上传和管理你的照片</p>
         </div>
         <button
-          onClick={() => setShowUpload(!showUpload)}
+          onClick={() => { if (showUpload) { resetUploadForm(); } else { setAddToGroupId(null); setShowUpload(true); } }}
           className="bg-indigo-500 hover:bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-medium transition-colors flex items-center gap-2"
         >
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -217,30 +238,36 @@ export default function PhotosPage() {
 
       {showUpload && (
         <div className="bg-white rounded-2xl border border-border p-6 mb-8 fade-in">
-          <h2 className="text-lg font-semibold text-slate-800 mb-4">新建相册</h2>
+          <h2 className="text-lg font-semibold text-slate-800 mb-4">
+            {addToGroupId
+              ? `添加照片到「${groups.find((g) => g.id === addToGroupId)?.title}」`
+              : "新建相册"}
+          </h2>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">标题 *</label>
-              <input
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="相册标题"
-                className="w-full px-4 py-2.5 rounded-xl border border-border focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
-              />
+          {!addToGroupId && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">标题 *</label>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="相册标题"
+                  className="w-full px-4 py-2.5 rounded-xl border border-border focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">描述</label>
+                <input
+                  type="text"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="可选描述"
+                  className="w-full px-4 py-2.5 rounded-xl border border-border focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                />
+              </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">描述</label>
-              <input
-                type="text"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="可选描述"
-                className="w-full px-4 py-2.5 rounded-xl border border-border focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
-              />
-            </div>
-          </div>
+          )}
 
           <div
             className={`upload-zone rounded-xl p-8 text-center cursor-pointer mb-4 ${dragging ? "dragging" : ""}`}
@@ -286,13 +313,13 @@ export default function PhotosPage() {
           <div className="flex gap-3">
             <button
               onClick={handleUpload}
-              disabled={uploading || files.length === 0 || !title.trim()}
+              disabled={uploading || files.length === 0 || (!addToGroupId && !title.trim())}
               className="bg-indigo-500 hover:bg-indigo-600 disabled:bg-slate-300 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-xl font-medium transition-colors"
             >
               {uploading ? uploadProgress || "上传中..." : `上传 ${files.length} 张照片`}
             </button>
             <button
-              onClick={() => { setShowUpload(false); setFiles([]); setPreviews([]); setTitle(""); setDescription(""); }}
+              onClick={resetUploadForm}
               className="px-6 py-2.5 rounded-xl font-medium text-slate-600 hover:bg-slate-100 transition-colors"
             >
               取消
@@ -323,14 +350,26 @@ export default function PhotosPage() {
                     {new Date(group.created_at).toLocaleDateString("zh-CN")} &middot; {(photos[group.id] || []).length} 张照片
                   </p>
                 </div>
-                <button
-                  onClick={() => deleteGroup(group.id)}
-                  className="text-slate-400 hover:text-red-500 transition-colors p-1"
-                >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
-                  </svg>
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => startAddToGroup(group.id)}
+                    className="text-slate-400 hover:text-indigo-500 transition-colors p-1"
+                    title="添加照片"
+                  >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => deleteGroup(group.id)}
+                    className="text-slate-400 hover:text-red-500 transition-colors p-1"
+                    title="删除相册"
+                  >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                    </svg>
+                  </button>
+                </div>
               </div>
               <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
                 {(photos[group.id] || []).map((photo, idx) => (
