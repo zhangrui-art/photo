@@ -49,7 +49,7 @@ export async function onRequestPost(context) {
   const now = Math.floor(Date.now() / 1000);
   const exp = now + 7200;
   const keyTime = `${now};${exp}`;
-  const signKey = await hmacSha1(secretKey, keyTime);
+  const signKey = hexEncode(await hmacSha1(secretKey, keyTime));
 
   const httpString = `put\n${cosPath}\n\n\n`;
   const httpStringHash = await sha1(httpString);
