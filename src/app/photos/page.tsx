@@ -204,6 +204,8 @@ export default function PhotosPage() {
     const diff = touchStartX.current - touchEndX.current;
     if (Math.abs(diff) > 50) {
       lightboxNav(diff > 0 ? 1 : -1);
+    } else {
+      setLightbox(null);
     }
   }
 
@@ -440,11 +442,14 @@ export default function PhotosPage() {
             </div>
           </div>
 
-          <div className="flex-1 flex items-center justify-center relative px-4 min-h-0">
+          <div
+            className="flex-1 flex items-center justify-center relative px-4 min-h-0 cursor-pointer"
+            onClick={() => setLightbox(null)}
+          >
             {lightbox.index > 0 && (
               <button
                 className="hidden md:block absolute left-2 text-white/60 hover:text-white text-4xl z-10"
-                onClick={() => lightboxNav(-1)}
+                onClick={(e) => { e.stopPropagation(); lightboxNav(-1); }}
               >
                 &#8249;
               </button>
@@ -455,6 +460,7 @@ export default function PhotosPage() {
                 alt=""
                 className="max-w-full max-h-full object-contain rounded-lg select-none"
                 draggable={false}
+                onClick={() => setLightbox(null)}
               />
             ) : (
               <div className="text-white/50">加载中...</div>
@@ -462,7 +468,7 @@ export default function PhotosPage() {
             {lightbox.index < lightbox.groupPhotos.length - 1 && (
               <button
                 className="hidden md:block absolute right-2 text-white/60 hover:text-white text-4xl z-10"
-                onClick={() => lightboxNav(1)}
+                onClick={(e) => { e.stopPropagation(); lightboxNav(1); }}
               >
                 &#8250;
               </button>
