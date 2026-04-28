@@ -115,11 +115,13 @@ export default function PhotosPage() {
 
         await uploadToCOS(file, cosKey);
 
-        await supabase.from("photos").insert({
+        const { error: insertErr } = await supabase.from("photos").insert({
           group_id: groupId,
           cos_key: cosKey,
           filename: file.name,
+          url: cosKey,
         });
+        if (insertErr) throw new Error("保存记录失败: " + insertErr.message);
       }
 
       resetUploadForm();
