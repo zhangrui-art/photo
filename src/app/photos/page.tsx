@@ -95,6 +95,7 @@ export default function PhotosPage() {
 
     try {
       let groupId = addToGroupId;
+      let newGroup: PhotoGroup | null = null;
 
       if (!groupId) {
         const { data: group } = await supabase
@@ -104,28 +105,55 @@ export default function PhotosPage() {
           .single();
         if (!group) throw new Error("Failed to create group");
         groupId = group.id;
+        newGroup = group;
       }
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        setUploadProgress(`上传中 ${i + 1}/${files.length}...`);
+      const total = files.length;
+      let done = 0;
+      const newPhotos: Photo[] = [];
+      const newKeys: string[] = [];
+      const concurrency = 3;
 
+      async function uploadOne(file: File) {
         const ext = file.name.split(".").pop() || "jpg";
         const cosKey = `photos/${groupId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
 
         await uploadToCOS(file, cosKey);
 
-        const { error: insertErr } = await supabase.from("photos").insert({
+        const { data, error: insertErr } = await supabase.from("photos").insert({
           group_id: groupId,
           cos_key: cosKey,
           filename: file.name,
           url: cosKey,
-        });
+        }).select().single();
         if (insertErr) throw new Error("保存记录失败: " + insertErr.message);
+        if (data) {
+          newPhotos.push(data);
+          newKeys.push(cosKey);
+        }
+
+        done++;
+        setUploadProgress(`上传中 ${done}/${total}...`);
+      }
+
+      for (let i = 0; i < files.length; i += concurrency) {
+        const batch = files.slice(i, i + concurrency);
+        await Promise.all(batch.map(uploadOne));
+      }
+
+      if (newGroup) {
+        setGroups((prev) => [newGroup, ...prev]);
+      }
+      setPhotos((prev) => ({
+        ...prev,
+        [groupId!]: [...(prev[groupId!] || []), ...newPhotos],
+      }));
+      if (newKeys.length > 0) {
+        const urls = await getSignedUrls(newKeys);
+        setSignedUrls((prev) => ({ ...prev, ...urls }));
       }
 
       resetUploadForm();
-      await loadData();
     } catch (err) {
       console.error("Upload failed:", err);
       const msg = err instanceof Error ? err.message : String(err);
@@ -156,11 +184,10 @@ export default function PhotosPage() {
 
   async function deletePhoto(photo: Photo, groupId: string) {
     if (!confirm("确定删除这张照片吗？")) return;
-    await deleteFromCOS([photo.cos_key]);
-    await supabase.from("photos").delete().eq("id", photo.id);
-    await loadData();
+
+    const remaining = (photos[groupId] || []).filter((p) => p.id !== photo.id);
+    setPhotos((prev) => ({ ...prev, [groupId]: remaining }));
     if (lightbox) {
-      const remaining = (photos[groupId] || []).filter((p) => p.id !== photo.id);
       if (remaining.length === 0) {
         setLightbox(null);
       } else {
@@ -168,6 +195,11 @@ export default function PhotosPage() {
         setLightbox({ index: newIdx, groupPhotos: remaining, groupId });
       }
     }
+
+    await Promise.all([
+      deleteFromCOS([photo.cos_key]),
+      supabase.from("photos").delete().eq("id", photo.id),
+    ]);
   }
 
   async function downloadPhoto(cosKey: string, filename: string) {
@@ -214,10 +246,19 @@ export default function PhotosPage() {
 
     const groupPhotos = photos[groupId] || [];
     const keys = groupPhotos.map((p) => p.cos_key).filter(Boolean);
-    await deleteFromCOS(keys);
-    await supabase.from("photos").delete().eq("group_id", groupId);
+
+    setGroups((prev) => prev.filter((g) => g.id !== groupId));
+    setPhotos((prev) => {
+      const next = { ...prev };
+      delete next[groupId];
+      return next;
+    });
+
+    await Promise.all([
+      keys.length > 0 ? deleteFromCOS(keys) : Promise.resolve(),
+      supabase.from("photos").delete().eq("group_id", groupId),
+    ]);
     await supabase.from("photo_groups").delete().eq("id", groupId);
-    await loadData();
   }
 
   const currentLightboxPhoto = lightbox ? lightbox.groupPhotos[lightbox.index] : null;
