@@ -8,8 +8,14 @@ export async function uploadToCOS(file: File, key: string): Promise<void> {
     body: file,
   });
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.detail || "Upload failed");
+    let detail = `HTTP ${res.status}`;
+    try {
+      const data = await res.json();
+      detail = JSON.stringify(data);
+    } catch {
+      detail = await res.text().catch(() => detail);
+    }
+    throw new Error(detail);
   }
 }
 

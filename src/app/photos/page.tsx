@@ -126,7 +126,8 @@ export default function PhotosPage() {
       await loadData();
     } catch (err) {
       console.error("Upload failed:", err);
-      alert("上传失败，请重试");
+      const msg = err instanceof Error ? err.message : String(err);
+      alert("上传失败: " + msg);
     } finally {
       setUploading(false);
     }
