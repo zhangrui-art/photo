@@ -1,21 +1,21 @@
 export async function uploadToCOS(file: File, key: string): Promise<void> {
-  const res = await fetch("/api/cos-proxy-upload", {
+  const res = await fetch("/api/cos-upload-url", {
     method: "POST",
-    headers: {
-      "Content-Type": file.type || "application/octet-stream",
-      "X-COS-Key": key,
-    },
-    body: file,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key }),
   });
   if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try {
-      const data = await res.json();
-      detail = JSON.stringify(data);
-    } catch {
-      detail = await res.text().catch(() => detail);
-    }
-    throw new Error(detail);
+    throw new Error("获取上传地址失败");
+  }
+  const { uploadUrl } = await res.json();
+
+  const putRes = await fetch(uploadUrl, {
+    method: "PUT",
+    body: file,
+  });
+  if (!putRes.ok) {
+    const text = await putRes.text().catch(() => "");
+    throw new Error("COS上传失败: " + (text || putRes.status));
   }
 }
 
