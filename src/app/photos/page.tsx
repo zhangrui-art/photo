@@ -407,7 +407,7 @@ export default function PhotosPage() {
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
         >
-          <div className="flex items-center justify-between px-4 py-3 shrink-0">
+          <div className="flex items-center justify-between px-4 py-3 shrink-0" onTouchStart={(e) => e.stopPropagation()} onTouchEnd={(e) => e.stopPropagation()}>
             <span className="text-white/70 text-sm">
               {lightbox.index + 1} / {lightbox.groupPhotos.length}
             </span>
